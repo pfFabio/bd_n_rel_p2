@@ -1,0 +1,30 @@
+services:
+  api:
+    build: .
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - mongo
+      - redis
+
+  mongo:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+
+volumes:
+  mongo-data:
