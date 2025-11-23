@@ -1,9 +1,10 @@
-import json
-from src.database.redis_client import get_redis_client
-from src.models.corrida_model import Corrida
+import os
+from faststream.rabbit import RabbitBroker
+from dotenv import load_dotenv
 
-def publish_corrida(corrida: Corrida):
-    redis_client = get_redis_client()
-    channel = 'corridas'
-    message = json.dumps(corrida.dict())
-    redis_client.publish(channel, message)
+# Carrega as variáveis de ambiente
+load_dotenv()
+
+# Configuração do Broker RabbitMQ
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+broker = RabbitBroker(RABBITMQ_URL)

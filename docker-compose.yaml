@@ -1,30 +1,79 @@
 services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5672:5672"   # Porta do protocolo AMQP
+      - "15672:15672" # Interface de gerenciamento web
+    networks:
+      - transflow-net
+
+
   api:
     build: .
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
     volumes:
-      - ./src:/app/src
+      - .:/app # Monta o diretório inteiro para refletir mudanças
     environment:
       - MONGO_URI=mongodb://mongo:27017/
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
     depends_on:
-      - mongo
-      - redis
+      rabbitmq:
+        condition: service_healthy
+      mongo:
+        condition: service_started
+      redis:
+        condition: service_started
+    networks:
+      - transflow-net
+
+  consumer:
+    build: .
+    command: faststream run src.consumer:app
+    volumes:
+      - .:/app # Monta o diretório inteiro para refletir mudanças
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mongo:
+        condition: service_started
+      redis:
+        condition: service_started
+    networks:
+      - transflow-net
 
   mongo:
     image: mongo:latest
     ports:
       - "27017:27017"
     volumes:
-      - mongo-data:/data/db
+      - mongo-data:/data/db # Persiste os dados do MongoDB
+    networks:
+      - transflow-net
 
   redis:
     image: redis:latest
     ports:
       - "6379:6379"
+    networks:
+      - transflow-net
 
 volumes:
-  mongo-data:
+  mongo-data: # Define o volume para persistência
+
+networks:
+  transflow-net:
+    driver: bridge

@@ -67,7 +67,7 @@ class Corrida(BaseModel):
     forma_pagamento: str
 
 class CorridaInDB(Corrida):
-    id: PyObjectId = Field(alias="_id")
+    id: Optional[PyObjectId] = Field(default=None, alias="_id")
 
     model_config = ConfigDict(
         populate_by_name=True,

@@ -1,3 +1,14 @@
+import logging
+from tenacity import retry, wait_fixed, stop_after_attempt, before_log, after_log
+
+# Configure logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -7,14 +18,21 @@ from src.database.mongo_client import MongoClientSingleton, get_mongo_collection
 from src.database.redis_client import get_redis_client
 import redis
 from contextlib import asynccontextmanager
+import os, pathlib
 from pymongo.errors import PyMongoError
+from dotenv import load_dotenv
+from src.producer import broker  # Importa o broker compartilhado
+from bson import ObjectId
 
+# Carrega as variáveis de ambiente do arquivo .env (se existir) e do sistema
+load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     MongoClientSingleton().connect()
-    # Initialize Redis and set initial balances
+    await broker.start()
+
     try:
         redis_client = get_redis_client()
         # Set initial balances only if they don't exist
@@ -27,6 +45,7 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
+    await broker.close()
     MongoClientSingleton().close()
 
 app = FastAPI(
@@ -98,62 +117,32 @@ async def get_saldo(motorista: str):
             detail=f"Redis connection error: {e}"
         )
 
-@app.post("/corridas", response_model=CorridaInDB, status_code=status.HTTP_201_CREATED, tags=["Corridas"])
+# Define a retryable publish function
+@retry(
+    wait=wait_fixed(2),  # Wait 2 seconds between retries
+    stop=stop_after_attempt(3),  # Try 3 times
+    before=before_log(logger, logging.INFO),
+    after=after_log(logger, logging.WARNING),
+    reraise=True # Re-raise the exception after all retries fail
+)
+async def publish_message_with_retries(data: dict):
+    await broker.publish(data, queue="corridas_queue")
+
+@app.post("/corridas", status_code=status.HTTP_202_ACCEPTED, tags=["Corridas"])
 async def create_corrida(corrida: Corrida):
     """
-    Cadastra uma nova corrida no sistema e atualiza o saldo do motorista.
+    Publica um evento 'corrida_finalizada' para processamento assíncrono.
     """
-    # 1. Insert into MongoDB
     try:
-        corridas_collection = get_mongo_collection()
         corrida_dict = corrida.model_dump()
-        result = corridas_collection.insert_one(corrida_dict)
-        if not result.inserted_id:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to insert corrida into database."
-            )
-        
-        inserted_corrida = corridas_collection.find_one({"_id": result.inserted_id})
-        if not inserted_corrida:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to retrieve inserted corrida."
-            )
-        
-        inserted_corrida['_id'] = str(inserted_corrida['_id'])
-
-    except PyMongoError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Database error: {e}"
-        )
-
-    # 2. Atomically update driver's balance in Redis
-    try:
-        redis_client = get_redis_client()
-        nome_motorista = corrida.motorista.nome
-        valor_corrida = corrida.valor_corrida
-        chave_motorista = f"motorista:{nome_motorista}"
-        
-        # HINCRBYFLOAT is atomic and increments a field within a hash
-        redis_client.hincrbyfloat(chave_motorista, "saldo", valor_corrida)
-
-    except redis.exceptions.ConnectionError as e:
-        # If Redis fails, we should ideally have a rollback/retry mechanism.
-        # For now, we'll raise an error. The corrida was already saved.
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Corrida saved to DB, but failed to update driver balance in Redis: {e}"
-        )
+        await publish_message_with_retries(corrida_dict)
+        return {"status": "Corrida recebida e sendo processada."}
     except Exception as e:
-        # Catch other potential errors
+        logger.error(f"Falha persistente ao publicar evento da corrida após múltiplas tentativas: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An unexpected error occurred while updating balance: {e}"
+            detail=f"Falha ao publicar evento da corrida após tentativas: {e}"
         )
-
-    return CorridaInDB(**inserted_corrida)
 
 
 @app.get("/corridas", response_model=List[CorridaInDB], tags=["Corridas"])
@@ -165,8 +154,20 @@ async def list_corridas():
         corridas_collection = get_mongo_collection()
         corridas = []
         for corrida in corridas_collection.find():
-            corrida['_id'] = str(corrida['_id'])
-            corridas.append(CorridaInDB(**corrida))
+            doc = dict(corrida)
+            raw_id = doc.get("_id")
+            doc["id_corrida"] = str(raw_id)
+            if isinstance(raw_id, ObjectId):
+                doc["_id"] = raw_id
+            else:
+                try:
+                    if ObjectId.is_valid(str(raw_id)):
+                        doc["_id"] = ObjectId(str(raw_id))
+                    else:
+                        doc.pop("_id", None)
+                except Exception:
+                    doc.pop("_id", None)
+            corridas.append(CorridaInDB(**doc))
         return corridas
     except PyMongoError as e:
         raise HTTPException(
@@ -188,7 +189,7 @@ async def filter_corridas_by_payment(forma_pagamento: str):
         corridas_collection = get_mongo_collection()
         corridas = []
         for corrida in corridas_collection.find({"forma_pagamento": forma_pagamento}):
-            corrida['_id'] = str(corrida['_id'])
+            corrida['id_corrida'] = str(corrida['_id'])
             corridas.append(CorridaInDB(**corrida))
         return corridas
     except PyMongoError as e:
@@ -204,4 +205,6 @@ async def filter_corridas_by_payment(forma_pagamento: str):
 
 @app.get("/", include_in_schema=False)
 async def read_index():
-    return FileResponse("frontend/index.html")
+    # Constrói o caminho absoluto para o arquivo HTML
+    current_dir = pathlib.Path(__file__).parent.parent
+    return FileResponse(current_dir / "frontend/index.html")

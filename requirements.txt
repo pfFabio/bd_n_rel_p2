@@ -1,6 +1,9 @@
 fastapi
 uvicorn
 pymongo
+faststream[cli]
+faststream[rabbit]
 redis
 pydantic
 python-dotenv
+tenacity
