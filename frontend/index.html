@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TransFlow</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1, h2 { color: #333; }
+        .container { max-width: 800px; margin: auto; }
+        .section { margin-bottom: 20px; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }
+        form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        label { font-weight: bold; }
+        input, select, button { padding: 8px; border-radius: 3px; border: 1px solid #ccc; }
+        button { background-color: #007bff; color: white; cursor: pointer; }
+        button:hover { background-color: #0056b3; }
+        #rides-list { list-style-type: none; padding: 0; }
+        #rides-list li { border: 1px solid #eee; padding: 10px; margin-bottom: 10px; border-radius: 3px; }
+        .ride-details { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>TransFlow</h1>
+
+        <div class="section">
+            <h2>Criar Corrida</h2>
+            <form id="create-ride-form">
+                <label for="id_corrida">ID da Corrida:</label>
+                <input type="text" id="id_corrida" required>
+
+                <label for="passageiro_nome">Nome do Passageiro:</label>
+                <input type="text" id="passageiro_nome" required>
+
+                <label for="passageiro_telefone">Telefone do Passageiro:</label>
+                <input type="text" id="passageiro_telefone" required>
+
+                <label for="motorista_nome">Nome do Motorista:</label>
+                <input type="text" id="motorista_nome" value="joao" required>
+
+                <label for="motorista_nota">Nota do Motorista:</label>
+                <input type="number" id="motorista_nota" step="0.1" value="4.5" required>
+
+                <label for="origem">Origem:</label>
+                <input type="text" id="origem" required>
+
+                <label for="destino">Destino:</label>
+                <input type="text" id="destino" required>
+
+                <label for="valor_corrida">Valor:</label>
+                <input type="number" step="0.01" id="valor_corrida" required>
+
+                <label for="forma_pagamento">Forma de Pagamento:</label>
+                <select id="forma_pagamento">
+                    <option value="credito">Crédito</option>
+                    <option value="debito">Débito</option>
+                    <option value="dinheiro">Dinheiro</option>
+                </select>
+                
+                <button type="submit">Criar Corrida</button>
+            </form>
+            <p id="create-ride-status"></p>
+        </div>
+
+        <div class="section">
+            <h2>Consultar Saldo do Motorista</h2>
+            <form id="get-balance-form">
+                <label for="motorista_saldo_nome">Nome do Motorista:</label>
+                <input type="text" id="motorista_saldo_nome" value="joao" required>
+                <button type="submit">Consultar</button>
+            </form>
+            <p id="balance-result"></p>
+        </div>
+
+        <div class="section">
+            <h2>Corridas</h2>
+            <form id="filter-rides-form">
+                <label for="filter_payment">Filtrar por Forma de Pagamento:</label>
+                <select id="filter_payment">
+                    <option value="">Todas</option>
+                    <option value="credito">Crédito</option>
+                    <option value="debito">Débito</option>
+                    <option value="dinheiro">Dinheiro</option>
+                </select>
+                 <button type="submit">Filtrar</button>
+            </form>
+            <ul id="rides-list"></ul>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:8000';
+
+        // --- Criar Corrida ---
+        const createRideForm = document.getElementById('create-ride-form');
+        const createRideStatus = document.getElementById('create-ride-status');
+
+        createRideForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const ride = {
+                id_corrida: document.getElementById('id_corrida').value,
+                passageiro: {
+                    nome: document.getElementById('passageiro_nome').value,
+                    telefone: document.getElementById('passageiro_telefone').value
+                },
+                motorista: {
+                    nome: document.getElementById('motorista_nome').value,
+                    nota: parseFloat(document.getElementById('motorista_nota').value)
+                },
+                origem: document.getElementById('origem').value,
+                destino: document.getElementById('destino').value,
+                valor_corrida: parseFloat(document.getElementById('valor_corrida').value),
+                forma_pagamento: document.getElementById('forma_pagamento').value
+            };
+
+            try {
+                const response = await fetch(`${API_URL}/corridas`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(ride)
+                });
+                const data = await response.json();
+                createRideStatus.textContent = data.status || `Error: ${data.detail}`;
+                if (response.ok) {
+                    createRideForm.reset();
+                    setTimeout(fetchRides, 2000); // Refresh rides list after a delay
+                }
+            } catch (error) {
+                createRideStatus.textContent = `Error: ${error.message}`;
+            }
+        });
+
+        // --- Consultar Saldo ---
+        const getBalanceForm = document.getElementById('get-balance-form');
+        const balanceResult = document.getElementById('balance-result');
+
+        getBalanceForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const driverName = document.getElementById('motorista_saldo_nome').value;
+            balanceResult.textContent = 'Carregando...';
+            try {
+                const response = await fetch(`${API_URL}/saldo/${driverName}`);
+                const data = await response.json();
+                if (response.ok) {
+                    balanceResult.textContent = `Saldo de ${data.nome_motorista}: R$ ${data.saldo.toFixed(2)}`;
+                } else {
+                    balanceResult.textContent = `Error: ${data.detail}`;
+                }
+            } catch (error) {
+                balanceResult.textContent = `Error: ${error.message}`;
+            }
+        });
+        
+        // --- Listar e Filtrar Corridas ---
+        const ridesList = document.getElementById('rides-list');
+        const filterRidesForm = document.getElementById('filter-rides-form');
+
+        async function fetchRides(paymentType = '') {
+            let url = `${API_URL}/corridas`;
+            if (paymentType) {
+                url += `/${paymentType}`;
+            }
+            ridesList.innerHTML = '<li>Carregando...</li>';
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                ridesList.innerHTML = '';
+                if (response.ok) {
+                    if (data.length === 0) {
+                        ridesList.innerHTML = '<li>Nenhuma corrida encontrada.</li>';
+                        return;
+                    }
+                    data.forEach(ride => {
+                        const li = document.createElement('li');
+                        li.innerHTML = `
+                            <div class="ride-details">
+                                <span><strong>ID:</strong> ${ride.id_corrida}</span>
+                                <span><strong>Passageiro:</strong> ${ride.passageiro.nome}</span>
+                                <span><strong>Motorista:</strong> ${ride.motorista.nome} (Nota: ${ride.motorista.nota})</span>
+                                <span><strong>Origem:</strong> ${ride.origem}</span>
+                                <span><strong>Destino:</strong> ${ride.destino}</span>
+                                <span><strong>Valor:</strong> R$ ${ride.valor_corrida.toFixed(2)}</span>
+                                <span><strong>Pagamento:</strong> ${ride.forma_pagamento}</span>
+                            </div>
+                        `;
+                        ridesList.appendChild(li);
+                    });
+                } else {
+                    ridesList.innerHTML = `<li>Error: ${data.detail}</li>`;
+                }
+            } catch (error) {
+                ridesList.innerHTML = `<li>Error: ${error.message}</li>`;
+            }
+        }
+        
+        filterRidesForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const paymentType = document.getElementById('filter_payment').value;
+            fetchRides(paymentType);
+        });
+
+        // Initial fetch of all rides
+        fetchRides();
+
+    </script>
+</body>
+</html>
